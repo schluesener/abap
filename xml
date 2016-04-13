@@ -1,0 +1,170 @@
+*&---------------------------------------------------------------------*
+*& Report  Z_IMPORT_XML_DOMTREEE
+*&---------------------------------------------------------------------*
+
+REPORT  z_import_xml_domtree LINE-SIZE 510.
+
+TYPE-POOLS: ixml.
+CLASS cl_ixml DEFINITION LOAD.
+
+DATA: g_ixml TYPE REF TO if_ixml.
+g_ixml = cl_ixml=>create( ).
+
+DATA: streamfactory TYPE REF TO if_ixml_stream_factory.
+streamfactory = g_ixml->create_stream_factory( ).
+
+DATA: document TYPE REF TO if_ixml_document.
+document = g_ixml->create_document( ).
+
+PARAMETERS: p_file LIKE rlgrap-filename DEFAULT '\\file\test.xml' .
+TYPES: BEGIN OF xml_line,
+data(255) TYPE x,
+END OF xml_line.
+DATA: xml_table TYPE TABLE OF xml_line,
+xml_table_size TYPE i,
+istream TYPE REF TO if_ixml_istream.
+
+* upload a file from the client's workstation
+CALL FUNCTION 'WS_UPLOAD'
+  EXPORTING
+    filename   = p_file
+    filetype   = 'BIN'
+  IMPORTING
+    filelength = xml_table_size
+  TABLES
+    data_tab   = xml_table
+  EXCEPTIONS
+    OTHERS     = 11.
+IF sy-subrc <> 0.
+  MESSAGE 'Datei konnte nicht geöffnet werden' TYPE 'E' DISPLAY LIKE 'I'.
+ENDIF.
+
+* wrap the table containing the file into a stream
+istream = streamfactory->create_istream_itable( table = xml_table
+size = xml_table_size ).
+
+DATA: parser TYPE REF TO if_ixml_parser.
+parser = g_ixml->create_parser( stream_factory = streamfactory
+istream = istream
+document = document ).
+
+IF parser->parse( ) NE 0.
+  IF parser->num_errors( ) NE 0.
+    DATA: parseerror TYPE REF TO if_ixml_parse_error,
+    str TYPE string,
+    i TYPE i,
+    count TYPE i,
+    index TYPE i.
+    count = parser->num_errors( ).
+    WRITE: count, ' parse errors have occured:'.
+    index = 0.
+    WHILE index < count.
+      parseerror = parser->get_error( index = index ).
+      i = parseerror->get_line( ).
+      WRITE: 'line: ', i.
+      i = parseerror->get_column( ).
+      WRITE: 'column: ', i.
+      str = parseerror->get_reason( ).
+      WRITE: str.
+      index = index + 1.
+    ENDWHILE.
+  ENDIF.
+ENDIF.
+
+DATA: items TYPE REF TO if_ixml_node_collection.
+items = document->get_elements_by_tag_name( name = 'Firma' ).
+
+DATA: element TYPE REF TO if_ixml_element.
+element = document->get_root_element( ).
+
+DATA: nodes TYPE REF TO if_ixml_node_list,
+iterator TYPE REF TO if_ixml_node_iterator,
+node TYPE REF TO if_ixml_node.
+
+nodes = element->get_children( ).
+iterator = nodes->create_iterator( ).
+
+* iterator code as usual:
+node = iterator->get_next( ).
+
+WHILE NOT node IS INITIAL.
+  node = iterator->get_next( ).
+ENDWHILE.
+
+
+DATA: xml_table2 TYPE TABLE OF xml_line.
+
+TYPES: BEGIN OF xml_line2,
+data TYPE c LENGTH 255,
+END OF xml_line2.
+
+DATA: xml_table3 TYPE TABLE OF xml_line2,
+gs_xml_table2 TYPE xml_line,
+gs_xml_table3 TYPE xml_line2.
+
+DATA: xml_size3 TYPE i.
+DATA: postream TYPE REF TO if_ixml_ostream.
+
+postream = streamfactory->create_ostream_itable( table = xml_table2 ).
+
+CALL METHOD document->render( ostream = postream ).
+
+*-- how many bytes were written to the table?
+xml_size3 = postream->get_num_written_raw( ).
+
+*-- print the whole DOM tree as a list...
+node = document.
+
+LOOP AT xml_table2 INTO gs_xml_table2.
+
+  CALL FUNCTION 'SCMS_BIN_TO_TEXT'
+    EXPORTING
+      bin_line  = gs_xml_table2-data
+    IMPORTING
+      text_line = gs_xml_table3-data.
+
+  APPEND gs_xml_table3 TO xml_table3.
+  WRITE: gs_xml_table3-data.
+  CLEAR gs_xml_table2-data.
+  CLEAR gs_xml_table3-data.
+ENDLOOP.
+
+PERFORM print_node USING node.
+
+BREAK-POINT.
+
+
+
+*---------------------------------------------------------------------*
+* FORM print_node *
+*---------------------------------------------------------------------*
+* ........ *
+*---------------------------------------------------------------------*
+FORM print_node USING value(pnode) TYPE REF TO if_ixml_node.
+  DATA: indent TYPE i.
+  DATA: ptext TYPE REF TO if_ixml_text.
+  DATA: string TYPE string.
+
+  indent = pnode->get_height( ) * 2.
+
+  CASE pnode->get_type( ).
+    WHEN if_ixml_node=>co_node_element.
+      string = pnode->get_name( ).
+      WRITE: AT /indent '<', string, '> '.
+    WHEN if_ixml_node=>co_node_text.
+      ptext ?= pnode->query_interface( ixml_iid_text ).
+      IF ptext->ws_only( ) IS INITIAL.
+        string = pnode->get_value( ).
+        WRITE: AT /indent string.
+      ENDIF.
+  ENDCASE.
+
+  pnode = pnode->get_first_child( ).
+  WHILE NOT pnode IS INITIAL.
+
+    PERFORM print_node USING pnode.
+    pnode = pnode->get_next( ).
+
+  ENDWHILE.
+
+ENDFORM.                    "print_node
